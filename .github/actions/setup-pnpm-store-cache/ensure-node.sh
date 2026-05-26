@@ -28,14 +28,16 @@ openclaw_active_node_version() {
 
 openclaw_prepend_node_bin() {
   local node_bin_dir="$1"
+  local github_path_dir="${2:-$node_bin_dir}"
   local shell_node_bin_dir="$node_bin_dir"
   if command -v cygpath >/dev/null 2>&1; then
     shell_node_bin_dir="$(cygpath -u "$node_bin_dir" 2>/dev/null || printf '%s' "$node_bin_dir")"
   fi
   export PATH="$shell_node_bin_dir:$PATH"
   if [[ -n "${GITHUB_PATH:-}" ]]; then
-    local github_node_bin_dir="$shell_node_bin_dir"
-    if command -v cygpath >/dev/null 2>&1; then
+    local github_node_bin_dir="$github_path_dir"
+    if [[ $# -lt 2 ]] && command -v cygpath >/dev/null 2>&1; then
+      github_node_bin_dir="$shell_node_bin_dir"
       github_node_bin_dir="$(cygpath -w "$shell_node_bin_dir" 2>/dev/null || printf '%s' "$shell_node_bin_dir")"
     fi
     echo "$github_node_bin_dir" >> "$GITHUB_PATH"
@@ -108,6 +110,8 @@ openclaw_node_download_platform() {
     Linux:aarch64 | Linux:arm64) printf 'linux-arm64\n' ;;
     Darwin:x86_64) printf 'darwin-x64\n' ;;
     Darwin:arm64) printf 'darwin-arm64\n' ;;
+    MINGW*:x86_64 | MSYS*:x86_64 | CYGWIN*:x86_64) printf 'win-x64\n' ;;
+    MINGW*:aarch64 | MINGW*:arm64 | MSYS*:aarch64 | MSYS*:arm64 | CYGWIN*:aarch64 | CYGWIN*:arm64) printf 'win-arm64\n' ;;
     *)
       return 1
       ;;
@@ -116,15 +120,39 @@ openclaw_node_download_platform() {
 
 openclaw_download_node() {
   local requested_node="$1"
-  local version platform archive_url install_root
+  local version platform archive_url install_root temp_root
   version="$(openclaw_resolve_node_download_version "$requested_node")"
   platform="$(openclaw_node_download_platform)" || return 1
-  install_root="${RUNNER_TEMP:-/tmp}/openclaw-node-${version}-${platform}"
-  archive_url="https://nodejs.org/dist/${version}/node-${version}-${platform}.tar.xz"
-  mkdir -p "$install_root"
-  echo "Downloading Node ${version} from ${archive_url}"
-  curl -fsSL "$archive_url" | tar -xJ -C "$install_root" --strip-components=1
-  openclaw_prepend_node_bin "$install_root/bin"
+  temp_root="${RUNNER_TEMP:-/tmp}"
+  if command -v cygpath >/dev/null 2>&1; then
+    temp_root="$(cygpath -u "$temp_root" 2>/dev/null || printf '%s\n' "$temp_root")"
+  fi
+  install_root="${temp_root}/openclaw-node-${version}-${platform}"
+  if [[ "$platform" == win-* ]]; then
+    local archive_path ps_archive_path ps_install_root ps_bin_dir node_bin_dir
+    archive_path="${temp_root}/node-${version}-${platform}.zip"
+    archive_url="https://nodejs.org/dist/${version}/node-${version}-${platform}.zip"
+    rm -rf "$install_root"
+    mkdir -p "$install_root"
+    echo "Downloading Node ${version} from ${archive_url}"
+    curl -fsSL -o "$archive_path" "$archive_url"
+    ps_archive_path="$archive_path"
+    ps_install_root="$install_root"
+    if command -v cygpath >/dev/null 2>&1; then
+      ps_archive_path="$(cygpath -w "$archive_path")"
+      ps_install_root="$(cygpath -w "$install_root")"
+    fi
+    ps_bin_dir="$ps_install_root\\node-${version}-${platform}"
+    node_bin_dir="$install_root/node-${version}-${platform}"
+    pwsh -NoLogo -NoProfile -Command "Expand-Archive -LiteralPath '${ps_archive_path}' -DestinationPath '${ps_install_root}' -Force"
+    openclaw_prepend_node_bin "$node_bin_dir" "$ps_bin_dir"
+  else
+    archive_url="https://nodejs.org/dist/${version}/node-${version}-${platform}.tar.xz"
+    mkdir -p "$install_root"
+    echo "Downloading Node ${version} from ${archive_url}"
+    curl -fsSL "$archive_url" | tar -xJ -C "$install_root" --strip-components=1
+    openclaw_prepend_node_bin "$install_root/bin"
+  fi
 }
 
 openclaw_ensure_node() {
